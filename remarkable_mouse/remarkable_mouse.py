@@ -10,6 +10,7 @@ import struct
 from getpass import getpass
 
 import paramiko
+import paramiko.agent
 
 logging.basicConfig(format='%(message)s')
 log = logging.getLogger(__name__)
@@ -27,6 +28,9 @@ def open_remote_device(args, file='/dev/input/event0'):
     """
     log.info("Connecting to input '{}' on '{}'".format(file, args.address))
 
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
     if args.key is not None:
         password = None
         try:
@@ -42,14 +46,15 @@ def open_remote_device(args, file='/dev/input/event0'):
     elif args.password:
         password = args.password
         pkey = None
+    elif args.agent:
+        pkey = None
+        password = None
     else:
         password = getpass(
             "Password for '{}': ".format(args.address)
         )
         pkey = None
 
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     client.connect(
         args.address,
         username='root',
@@ -57,6 +62,11 @@ def open_remote_device(args, file='/dev/input/event0'):
         pkey=pkey,
         look_for_keys=False
     )
+
+    session = client.get_transport().open_session()
+
+    if args.agent:
+        paramiko.agent.AgentRequestHandler(session)
 
     # Start reading events
     _, stdout, _ = client.exec_command('cat ' + file)
@@ -70,6 +80,7 @@ def main():
     try:
         parser = argparse.ArgumentParser(description="use reMarkable tablet as a mouse input")
         parser.add_argument('--debug', action='store_true', default=False, help="enable debug messages")
+        parser.add_argument('--agent', action='store_true', default=False, help="use ssh agent")
         parser.add_argument('--key', type=str, metavar='PATH', help="ssh private key")
         parser.add_argument('--password', default=None, type=str, help="ssh password")
         parser.add_argument('--address', default='10.11.99.1', type=str, help="device address")
