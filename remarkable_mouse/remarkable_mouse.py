@@ -69,11 +69,11 @@ def open_remote_device(args, file='/dev/input/event0'):
         paramiko.agent.AgentRequestHandler(session)
 
     # Start reading events
-    _, stdout, _ = client.exec_command('cat ' + file)
+    session.exec_command('cat ' + file)
 
-    print("connected to", args.address)
+    print("connected to {}:{}".format(args.address,file))
 
-    return stdout
+    return session
 
 
 def main():
@@ -88,10 +88,19 @@ def main():
         parser.add_argument('--monitor', default=0, type=int, metavar='NUM', help="monitor to use")
         parser.add_argument('--threshold', default=1000, type=int, help="stylus pressure threshold (default 1000)")
         parser.add_argument('--evdev', action='store_true', default=False, help="use evdev to support pen tilt (requires root, no OSX support)")
+        parser.add_argument('--inputs', nargs="+", type=int, help="which input devices ([event]0,1,2) to forward (default [event]0)")
+        parser.add_argument('--all-inputs', action='store_true', default=False, help="use all inputs (event0 event1 event2)")
 
         args = parser.parse_args()
 
-        remote_device = open_remote_device(args)
+        args.inputs = set(args.inputs or [])
+        if not args.inputs:
+            args.inputs.add(0)
+
+
+        remote_devices = set()
+        for device_no in args.inputs:
+            remote_devices.add(open_remote_device(args, file='/dev/input/event{}'.format(device_no)))
 
         if args.debug:
             logging.getLogger('').setLevel(logging.DEBUG)
@@ -111,11 +120,11 @@ def main():
                 log.error('Make sure you run this program as root')
                 sys.exit(1)
 
-            pipe_device(args, remote_device, local_device)
+            pipe_device(args, remote_devices, local_device)
 
         else:
             from remarkable_mouse.pynput import read_tablet
-            read_tablet(args, remote_device)
+            read_tablet(args, remote_devices)
 
     except KeyboardInterrupt:
         pass

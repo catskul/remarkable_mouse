@@ -1,11 +1,12 @@
 import logging
 import struct
+import select
 
 logging.basicConfig(format='%(message)s')
 log = logging.getLogger(__name__)
 
-# evtype_sync = 0
-# evtype_key = 1
+e_type_sync = 0
+e_type_key = 1
 e_type_abs = 3
 
 # evcode_stylus_distance = 25
@@ -45,7 +46,7 @@ def fit(x, y, stylus_width, stylus_height, monitor, orientation):
     )
 
 
-def read_tablet(args, remote_device):
+def read_tablet(args, remote_devices):
     """Loop forever and map evdev events to mouse"""
 
     from screeninfo import get_monitors
@@ -59,43 +60,56 @@ def read_tablet(args, remote_device):
     monitor = get_monitors()[args.monitor]
     log.debug('Chose monitor: {}'.format(monitor))
 
+    fd_to_channel = { channel.fileno(): channel for channel in remote_devices }
+
     while True:
-        _, _, e_type, e_code, e_value = struct.unpack('2IHHi', remote_device.read(16))
 
-        if e_type == e_type_abs:
+        ready_remote_devices, _, _ = select.select([device.fileno() for device in remote_devices], [], [])
+        for fd in ready_remote_devices:
+            _, _, e_type, e_code, e_value = struct.unpack('2IHHi', fd_to_channel[fd].recv(16))
 
-            # handle x direction
-            if e_code == e_code_stylus_xpos:
-                log.debug(e_value)
-                x = e_value
-                new_x = True
+            if e_type == e_type_abs:
 
-            # handle y direction
-            if e_code == e_code_stylus_ypos:
-                log.debug('\t{}'.format(e_value))
-                y = e_value
-                new_y = True
+                # handle x direction
+                if e_code == e_code_stylus_xpos:
+                    log.debug(e_value)
+                    x = e_value
+                    new_x = True
 
-            # handle draw
-            if e_code == e_code_stylus_pressure:
-                log.debug('\t\t{}'.format(e_value))
-                if e_value > args.threshold:
-                    if lifted:
-                        log.debug('PRESS')
-                        lifted = False
-                        mouse.press(Button.left)
+                # handle y direction
+                elif e_code == e_code_stylus_ypos:
+                    log.debug('\t{}'.format(e_value))
+                    y = e_value
+                    new_y = True
+
+                # handle draw
+                elif e_code == e_code_stylus_pressure:
+                    log.debug('\t\t{}'.format(e_value))
+                    if e_value > args.threshold:
+                        if lifted:
+                            log.debug('PRESS')
+                            lifted = False
+                            mouse.press(Button.left)
+                    else:
+                        if not lifted:
+                            log.debug('RELEASE')
+                            lifted = True
+                            mouse.release(Button.left)
                 else:
-                    if not lifted:
-                        log.debug('RELEASE')
-                        lifted = True
-                        mouse.release(Button.left)
+                    log.debug('\t\tunhandled code: {} : {}'.format(e_code, e_value))
 
 
-            # only move when x and y are updated for smoother mouse
-            if new_x and new_y:
-                mapped_x, mapped_y = fit(x, y, stylus_width, stylus_height, monitor, args.orientation)
-                mouse.move(
-                    monitor.x + mapped_x - mouse.position[0],
-                    monitor.y + mapped_y - mouse.position[1]
-                )
-                new_x = new_y = False
+                # only move when x and y are updated for smoother mouse
+                if new_x and new_y:
+                    mapped_x, mapped_y = fit(x, y, stylus_width, stylus_height, monitor, args.orientation)
+                    mouse.move(
+                        monitor.x + mapped_x - mouse.position[0],
+                        monitor.y + mapped_y - mouse.position[1]
+                    )
+                    new_x = new_y = False
+            elif e_type == e_type_key:
+                log.debug('\t\tunhandled button event: {} : {}'.format(e_code, e_value))
+            elif e_type == e_type_sync:
+                log.debug('\t\tunhandled sync event: {} : {}'.format(e_code, e_value))
+            else:
+                log.debug('\t\tunhandled event: {} : {} : {}'.format(e_type, e_code, e_value))

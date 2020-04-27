@@ -1,5 +1,6 @@
 import logging
 import struct
+import select
 
 logging.basicConfig(format='%(message)s')
 log = logging.getLogger(__name__)
@@ -85,7 +86,7 @@ def create_local_device():
     return device.create_uinput_device()
 
 
-def pipe_device(args, remote_device, local_device):
+def pipe_device(args, remote_devices, local_device):
     """
     Pipe events from a remote device to a local device.
 
@@ -99,22 +100,27 @@ def pipe_device(args, remote_device, local_device):
     # SYN_REPORT events. Pending events for the next log are stored here
     pending_events = []
 
+    fd_to_channel = { channel.fileno(): channel for channel in remote_devices }
+
     while True:
-        e_time, e_millis, e_type, e_code, e_value = struct.unpack('2IHHi', remote_device.read(16))
-        e_bit = libevdev.evbit(e_type, e_code)
-        event = libevdev.InputEvent(e_bit, value=e_value)
 
-        local_device.send_events([event])
+        ready_remote_devices, _, _ = select.select([device.fileno() for device in remote_devices], [], [])
+        for fd in ready_remote_devices:
+            e_time, e_millis, e_type, e_code, e_value = struct.unpack('2IHHi', fd_to_channel[fd].recv(16))
+            e_bit = libevdev.evbit(e_type, e_code)
+            event = libevdev.InputEvent(e_bit, value=e_value)
 
-        if args.debug:
-            if e_bit == libevdev.EV_SYN.SYN_REPORT:
-                event_repr = ', '.join(
-                    '{} = {}'.format(
-                        event.code.name,
-                        event.value
-                    ) for event in pending_events
-                )
-                log.debug('{}.{:0>6} - {}'.format(e_time, e_millis, event_repr))
-                pending_events = []
-            else:
-                pending_events += [event]
+            local_device.send_events([event])
+
+            if args.debug:
+                if e_bit == libevdev.EV_SYN.SYN_REPORT:
+                    event_repr = ', '.join(
+                        '{} = {}'.format(
+                            event.code.name,
+                            event.value
+                        ) for event in pending_events
+                    )
+                    log.debug('{}.{:0>6} - {}'.format(e_time, e_millis, event_repr))
+                    pending_events = []
+                else:
+                    pending_events += [event]
