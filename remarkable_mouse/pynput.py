@@ -1,115 +1,99 @@
 import logging
 import struct
 import select
+import libevdev
 
-logging.basicConfig(format='%(message)s')
-log = logging.getLogger(__name__)
-
-e_type_sync = 0
-e_type_key = 1
-e_type_abs = 3
-
-# evcode_stylus_distance = 25
-# evcode_stylus_xtilt = 26
-# evcode_stylus_ytilt = 27
-e_code_stylus_xpos = 1
-e_code_stylus_ypos = 0
-e_code_stylus_pressure = 24
-# evcode_finger_xpos = 53
-# evcode_finger_ypos = 54
-# evcode_finger_pressure = 58
 
 stylus_width = 15725
 stylus_height = 20951
-# finger_width = 767
-# finger_height = 1023
+
+class FakeLocalDevice:
+
+    def __init__(self, args):
+        from screeninfo import get_monitors
+        from pynput.mouse import Button, Controller
+
+        
+        self.lifted = True
+        self.new_x = self.new_y = False
+        self.mouse = Controller()
+        self.threshold = args.threshold
+
+        self.monitor = get_monitors()[args.monitor]
+        
+        logging.basicConfig(format='%(message)s')
+
+        self.log = logging.getLogger(__name__)
+        self.log.debug('Chose monitor: {}'.format(self.monitor))
+
+    def fit(x, y, stylus_width, stylus_height, monitor, orientation):
+
+        if orientation == 'vertical':
+            y = stylus_height - y
+        elif orientation == 'right':
+            x, y = y, x
+            stylus_width, stylus_height = stylus_height, stylus_width
+        elif orientation == 'left':
+            x, y = stylus_height - y, stylus_width - x
+            stylus_width, stylus_height = stylus_height, stylus_width
+
+        ratio_width, ratio_height = monitor.width / stylus_width, monitor.height / stylus_height
+        scaling = ratio_width if ratio_width > ratio_height else ratio_height
+
+        return (
+            scaling * (x - (stylus_width - monitor.width / scaling) / 2),
+            scaling * (y - (stylus_height - monitor.height / scaling) / 2)
+        )
 
 
-# remap wacom coordinates in various orientations
-def fit(x, y, stylus_width, stylus_height, monitor, orientation):
+    def send_events(self, events):
+        from pynput.mouse import Button
 
-    if orientation == 'vertical':
-        y = stylus_height - y
-    elif orientation == 'right':
-        x, y = y, x
-        stylus_width, stylus_height = stylus_height, stylus_width
-    elif orientation == 'left':
-        x, y = stylus_height - y, stylus_width - x
-        stylus_width, stylus_height = stylus_height, stylus_width
-
-    ratio_width, ratio_height = monitor.width / stylus_width, monitor.height / stylus_height
-    scaling = ratio_width if ratio_width > ratio_height else ratio_height
-
-    return (
-        scaling * (x - (stylus_width - monitor.width / scaling) / 2),
-        scaling * (y - (stylus_height - monitor.height / scaling) / 2)
-    )
-
-
-def read_tablet(args, remote_devices):
-    """Loop forever and map evdev events to mouse"""
-
-    from screeninfo import get_monitors
-    from pynput.mouse import Button, Controller
-
-    lifted = True
-    new_x = new_y = False
-
-    mouse = Controller()
-
-    monitor = get_monitors()[args.monitor]
-    log.debug('Chose monitor: {}'.format(monitor))
-
-    fd_to_channel = { channel.fileno(): channel for channel in remote_devices }
-
-    while True:
-
-        ready_remote_devices, _, _ = select.select([device.fileno() for device in remote_devices], [], [])
-        for fd in ready_remote_devices:
-            _, _, e_type, e_code, e_value = struct.unpack('2IHHi', fd_to_channel[fd].recv(16))
-
-            if e_type == e_type_abs:
+        for event in events:
+            print(dir(event))
+            print(event.type)
+            if event.type == libevdev.EV_ABS:
 
                 # handle x direction
-                if e_code == e_code_stylus_xpos:
-                    log.debug(e_value)
-                    x = e_value
-                    new_x = True
+                if event.code == libevdev.EV_ABS.ABS_X:
+                    self.log.debug(event.value)
+                    x = event.value
+                    self.new_x = True
 
                 # handle y direction
-                elif e_code == e_code_stylus_ypos:
-                    log.debug('\t{}'.format(e_value))
-                    y = e_value
-                    new_y = True
+                elif event.code == libevdev.EV_ABS.ABS_X:
+                    self.log.debug('\t{}'.format(event.value))
+                    y = event.value
+                    self.new_y = True
 
                 # handle draw
-                elif e_code == e_code_stylus_pressure:
-                    log.debug('\t\t{}'.format(e_value))
-                    if e_value > args.threshold:
-                        if lifted:
-                            log.debug('PRESS')
-                            lifted = False
-                            mouse.press(Button.left)
+                elif event.code == libevdev.EV_ABS.ABS_PRESSURE:
+                    self.log.debug('\t\t{}'.format(event.value))
+                    if event.value > self.threshold:
+                        if self.lifted:
+                            self.log.debug('PRESS')
+                            self.lifted = False
+                            self.mouse.press(Button.left)
                     else:
-                        if not lifted:
-                            log.debug('RELEASE')
-                            lifted = True
-                            mouse.release(Button.left)
+                        if not self.lifted:
+                            self.log.debug('RELEASE')
+                            self.lifted = True
+                            self.mouse.release(Button.left)
                 else:
-                    log.debug('\t\tunhandled code: {} : {}'.format(e_code, e_value))
+                    self.log.debug('\t\tunhandled code: {} : {}'.format(event.code, event.value))
 
 
                 # only move when x and y are updated for smoother mouse
-                if new_x and new_y:
-                    mapped_x, mapped_y = fit(x, y, stylus_width, stylus_height, monitor, args.orientation)
-                    mouse.move(
-                        monitor.x + mapped_x - mouse.position[0],
-                        monitor.y + mapped_y - mouse.position[1]
+                if self.new_x and self.new_y:
+                    mapped_x, mapped_y = self.fit(x, y, stylus_width, stylus_height, self.monitor, args.orientation)
+                    self.mouse.move(
+                        self.monitor.x + mapped_x - self.mouse.position[0],
+                        self.monitor.y + mapped_y - self.mouse.position[1]
                     )
-                    new_x = new_y = False
-            elif e_type == e_type_key:
-                log.debug('\t\tunhandled button event: {} : {}'.format(e_code, e_value))
-            elif e_type == e_type_sync:
-                log.debug('\t\tunhandled sync event: {} : {}'.format(e_code, e_value))
+                    self.new_x = self.new_y = False
+            elif event.type == libevdev.EV_KEY:
+                self.log.debug('\t\tunhandled button event: {} : {}'.format(event.code, event.value))
+            elif event.type == libevdev.EV_SYN:
+                self.log.debug('\t\tunhandled sync event: {} : {}'.format(event.code, event.value))
             else:
-                log.debug('\t\tunhandled event: {} : {} : {}'.format(e_type, e_code, e_value))
+                self.log.debug('\t\tunhandled event: {} : {} : {}'.format(event.type, event.code, event.value))

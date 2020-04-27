@@ -110,7 +110,7 @@ def main():
             log.setLevel(logging.INFO)
 
         if args.evdev:
-            from remarkable_mouse.evdev import create_local_device, pipe_device
+            from remarkable_mouse.evdev import create_local_device
 
             try:
                 local_device = create_local_device()
@@ -120,11 +120,12 @@ def main():
                 log.error('Make sure you run this program as root')
                 sys.exit(1)
 
-            pipe_device(args, remote_devices, local_device)
-
         else:
-            from remarkable_mouse.pynput import read_tablet
-            read_tablet(args, remote_devices)
+            from remarkable_mouse.pynput import FakeLocalDevice
+            local_device = FakeLocalDevice(args)
+
+        from remarkable_mouse.evdev import pipe_device
+        pipe_device(args, remote_devices, local_device)
 
     except KeyboardInterrupt:
         pass
